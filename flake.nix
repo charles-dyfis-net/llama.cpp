@@ -6,7 +6,7 @@
   outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        inherit (pkgs.stdenv) isAarch32 isAarch64 isx86_32 isx86_64 isDarwin;
+        inherit (pkgs.stdenv) isAarch32 isAarch64 isDarwin;
         osSpecific = with pkgs; [ openmpi ] ++
         (
           if isAarch64 && isDarwin then
@@ -22,14 +22,13 @@
               CoreGraphics
               CoreVideo
             ]
-          else if isx86_32 || isx86_64 then
-            with pkgs; [ mkl ]
           else
             with pkgs; [ openblas ]
         );
         pkgs = import nixpkgs { inherit system; };
+        nativeBuildInputs = with pkgs; [ cmake pkgconfig ];
         llama-python =
-          pkgs.python310.withPackages (ps: with ps; [ numpy sentencepiece ]);
+          pkgs.python3.withPackages (ps: with ps; [ numpy sentencepiece ]);
       in {
         packages.default = pkgs.stdenv.mkDerivation {
           name = "llama.cpp";
@@ -37,24 +36,19 @@
           postPatch = ''
             substituteInPlace ./ggml-metal.m \
               --replace '[bundle pathForResource:@"ggml-metal" ofType:@"metal"];' "@\"$out/bin/ggml-metal.metal\";"
+            substituteInPlace ./*.py --replace '/usr/bin/env python' '${llama-python}/bin/python'
           '';
-          nativeBuildInputs = with pkgs; [ cmake pkgconfig ];
+          nativeBuildInputs = nativeBuildInputs;
           buildInputs = osSpecific;
           cmakeFlags = [ "-DLLAMA_BUILD_SERVER=ON" "-DLLAMA_MPI=ON" "-DBUILD_SHARED_LIBS=ON" "-DCMAKE_SKIP_BUILD_RPATH=ON" ]
             ++ (if isAarch64 && isDarwin then [
               "-DCMAKE_C_FLAGS=-D__ARM_FEATURE_DOTPROD=1"
               "-DLLAMA_METAL=ON"
-            ] else if isx86_32 || isx86_64 then [
-              "-DLLAMA_BLAS=ON"
-              "-DLLAMA_BLAS_VENDOR=Intel10_lp64"
             ] else [
               "-DLLAMA_BLAS=ON"
               "-DLLAMA_BLAS_VENDOR=OpenBLAS"
           ]);
-          installPhase = ''
-            runHook preInstall
-
-            install -D bin/* -t $out/bin
+          postInstall = ''
             mv $out/bin/main $out/bin/llama
             mv $out/bin/server $out/bin/llama-server
 
@@ -67,15 +61,7 @@
                 [[ $(${pkgs.file}/bin/file "$f") = *Mach-O* ]] || continue
                 install_name_tool -add_rpath "$out/lib" "$f"
               done
-            '' else ''
-              install -Dm644 lib*.so -t $out/lib
-            ''}
-
-            echo "#!${llama-python}/bin/python" > $out/bin/convert.py
-            cat ${./convert.py} >> $out/bin/convert.py
-            chmod +x $out/bin/convert.py
-
-            runHook postInstall
+            '' else ""}
           '';
           meta.mainProgram = "llama";
         };
@@ -93,7 +79,7 @@
         };
         apps.default = self.apps.${system}.llama;
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [ cmake llama-python ] ++ osSpecific;
+          packages = nativeBuildInputs ++ osSpecific;
         };
       });
 }
